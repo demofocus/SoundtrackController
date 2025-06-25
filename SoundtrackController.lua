@@ -9,7 +9,6 @@ Features:
 - Sound Effect Playback
 - Volume Control with Smooth Transitions
 - Crossfading between tracks
-- Audio zones and ambient sounds
 - No duplicate songs one after the other (if one plays, it won't play again next song)
 
 Usage: 

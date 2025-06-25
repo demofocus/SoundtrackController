@@ -7,7 +7,6 @@ A comprehensive object-orientated module for managing game soundtracks and audio
 - Sound Effect Playback
 - Volume Control with Smooth Transitions
 - Crossfading between tracks
-- Audio zones and ambient sounds
 - No duplicate songs one after the other (if one plays, it won't play again next song)
 
 Check the wiki for all documentation regarding the module!

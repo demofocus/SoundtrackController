@@ -114,26 +114,30 @@ function SoundtrackController:PlayMusic(SoundId, Options)
 	return Sound
 end
 
-function SoundtrackController:StopMusic(FadeOut)
+function SoundtrackController:StopMusic()
 	if not self.CurrentMusic then return end
 	
-	if FadeOut ~= false then
-		local FadeInfo = TweenInfo.new(self.FadeOutDuration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
-		
-		local FadeTween = TweenService:Create(self.CurrentMusic, FadeInfo, {Volume = 0})
-		FadeTween:Play()
-		
-		FadeTween.Completed:Connect(function()
-			if self.CurrentMusic then
-				self.CurrentMusic:Destroy()
-				self.CurrentMusic = nil
-			end
-		end)
-		
-	else
-		self.CurrentMusic:Destroy()
-		self.CurrentMusic = nil
-	end
+	self.CurrentMusic:Destroy()
+	self.CurrentMusic = nil
+	
+	self.IsPlaying = false
+	self.IsPaused = false
+end
+
+function SoundtrackController:FadeOutMusic()
+	if not self.CurrentMusic then return end
+	
+	local FadeInfo = TweenInfo.new(self.FadeOutDuration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+	
+	local FadeTween = TweenService:Create(self.CurrentMusic, FadeInfo, {Volume = 0})
+	FadeTween:Play()
+	
+	FadeTween.Completed:Connect(function()
+		if self.CurrentMusic then
+			self.CurrentMusic:Destroy()
+			self.CurrentMusic = nil
+		end
+	end)
 	
 	self.IsPlaying = false
 	self.IsPaused = false

@@ -44,6 +44,7 @@ function SoundtrackController.new()
 	self.MasterVolume = 1
 	self.MusicVolume = 0.8
 	self.SFXVolume = 1
+	self.AmbientVolume = 0.6
 	self.IsEnabled = true
 	self.CrossFadeDuration = 2
 	self.FadeInDuration = 1
@@ -57,6 +58,10 @@ function SoundtrackController.new()
 	self.SFXGroup.Name = "SFXGroup"
 	self.SFXGroup.Parent = SoundService
 	
+	self.AmbientGroup = Instance.new("SoundGroup")
+	self.AmbientGroup.Name = "AmbientGroup"
+	self.AmbientGroup.Parent = SoundService
+	
 	self.CurrentMusic = nil
 	self.CurrentPlaylist = nil
 	self.CurrentTrackIndex = 1
@@ -69,11 +74,203 @@ function SoundtrackController.new()
 	self.SoundCache = {}
 	self.ActiveSounds = {}
 	
+	self.ActiveAmbientSounds = {}
+	self.AmbientSoundCache = {}
+	
+	self.AudioZones = {}
+	self.ActiveZones = {}
+	self.ZoneConnections = {}
+	
+	self.DefaultZone = nil
+	self.CurrentZone = nil
+	self.ZoneTransitionDuration = 2
+	
 	self.OnTrackChanged = Instance.new("BindableEvent")
 	self.OnPlaylistEnded = Instance.new("BindableEvent")
 	self.OnVolumeChanged = Instance.new("BindableEvent")
 	
 	return self
+end
+
+function SoundtrackController:CreateAudioZone(ZoneInfo)
+	if not ZoneInfo or not ZoneInfo.Id or not ZoneInfo.Region then
+		warn("Invalid AudioZone info provided")
+		return
+	end
+	
+	local Zone = {
+		Id = ZoneInfo.Id,
+		Region = ZoneInfo.Region,
+		Priority = ZoneInfo.Priority or 1,
+		Music = ZoneInfo.Music,
+		MusicOptions = ZoneInfo.MusicOptions or {},
+		AmbientSounds = ZoneInfo.AmbientSounds or {},
+		TransitionDuration = ZoneInfo.TransitionDuration or self.ZoneTransitionDuration,
+		IsPlaylist = ZoneInfo.IsPlaylist or false,
+		PlaylistStartIndex = ZoneInfo.PlaylistStartIndex or 1
+	}
+	
+	self.AudioZones[ZoneInfo.Id] = Zone
+	
+	if ZoneInfo.IsDefault then
+		self.DefaultZone = Zone.Id
+	end
+	
+	return Zone
+end
+
+function SoundtrackController:RemoveAudioZone(ZoneId)
+	if self.AudioZones[ZoneId] then
+		self.AudioZones[ZoneId] = nil
+		
+		if self.CurrentZone == ZoneId then
+			self:ExitZone(ZoneId)
+			
+			if self.DefaultZone then
+				self:EnterZone(self.DefaultZone)
+			end
+		end
+	end
+end
+
+function SoundtrackController:StartZoneTracking(Player)
+	self:StopZoneTracking()
+	
+	local Connection = RunService.Heartbeat:Connect(function()
+		if not Player or not Player.Character or not Player.Character:FindFirstChild("HumanoidRootPart") then
+			return
+		end
+		
+		local Character = Player.Character
+		local HumanoidRootPart = Character:FindFirstChild("HumanoidRootPart")
+		local PlayerPosition = HumanoidRootPart.Position
+		
+		local HighestPriorityZone = nil
+		local HighestPriority = -1
+		
+		for ZoneId, Zone in self.AudioZones do
+			if Zone.Region then
+				local ZonePosition = Zone.Region.Position
+				local ZoneSize = Zone.Region.Size
+				
+				local InZoneX = PlayerPosition.X >= ZonePosition.X - ZoneSize.X/2 and PlayerPosition.X <= ZonePosition.X + ZoneSize.X/2
+				local InZoneY = PlayerPosition.Y >= ZonePosition.Y - ZoneSize.Y/2 and PlayerPosition.Y <= ZonePosition.Y + ZoneSize.Y/2
+				local InZoneZ = PlayerPosition.Z >= ZonePosition.Z - ZoneSize.Z/2 and PlayerPosition.Z <= ZonePosition.Z + ZoneSize.Z/2
+				
+				if InZoneX and InZoneY and InZoneZ then
+					if not table.find(self.ActiveZones, ZoneId) then
+						table.insert(self.ActiveZones, ZoneId)
+					end
+					
+					if Zone.Priority > HighestPriority then
+						HighestPriorityZone = ZoneId
+						HighestPriority = Zone.Priority
+					end
+				else
+					for i, ActiveZoneId in ipairs(self.ActiveZones) do
+						if ActiveZoneId == ZoneId then
+							table.remove(self.ActiveZones, i)
+							break
+						end
+					end
+				end
+			end
+		end
+		
+		if HighestPriorityZone and HighestPriorityZone ~= self.CurrentZone then
+			self:SwitchToZone(HighestPriorityZone)
+		elseif not HighestPriorityZone and self.CurrentZone and self.DefaultZone then
+			self:SwitchToZone(self.DefaultZone)
+		end
+	end)
+	
+	table.insert(self.ZoneConnections, Connection)
+	
+	if self.DefaultZone and not self.CurrentZone then
+		self:EnterZone(self.DefaultZone)
+	end
+end
+
+function SoundtrackController:StopZoneTracking()
+	for _, Connection in ipairs(self.ZoneConnections) do
+		Connection:Disconnect()
+	end 
+	
+	self.ZoneConnections = {}
+	
+	if self.CurrentZone then
+		self:ExitZone(self.CurrentZone)
+	end
+	
+	self.ActiveZones = {}
+	self.CurrentZones = nil
+end
+
+function SoundtrackController:SwitchToZone(ZoneId)
+	if self.CurrentZone then
+		self:ExitZone(self.CurrentZone)
+	end
+	
+	self:EnterZone(ZoneId)
+end
+
+function SoundtrackController:EnterZone(ZoneId)
+	local Zone = self.AudioZones[ZoneId]
+	if not Zone then return end
+	
+	self.CurrentZone = ZoneId
+	
+	if Zone.Music then
+		if Zone.IsPlaylist then
+			self:PlayPlaylist(Zone.Music, Zone.PlaylistStartIndex)
+		else
+			local MusicOptions = Zone.MusicOptions or {}
+			MusicOptions.CrossFadeDuration = MusicOptions.CrossFadeDuration or Zone.TransitionDuration
+			self:CrossFadeToMusic(Zone.Music, MusicOptions)
+		end
+	end
+	
+	if Zone.AmbientSounds and #Zone.AmbientSounds > 0 then
+		for _, AmbientSound in ipairs(Zone.AmbientSounds) do
+			self:PlayAmbientSound(AmbientSound.SoundId, AmbientSound.Options)
+		end
+	end
+end
+
+function SoundtrackController:ExitZone(ZoneId)
+	local Zone = self.AudioZones[ZoneId]
+	if not Zone then return end
+	
+	if self.CurrentZone == ZoneId then
+		if self.CurrentMusic then
+			if self.CurrentPlaylist then
+				self.CurrentPlaylist = nil
+			end
+			
+			if Zone.TransitionDuration > 0 then
+				local FadeInfo = TweenInfo.new(Zone.TransitionDuration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+				local FadeTween = TweenService:Create(self.CurrentMusic, FadeInfo, {Volume = 0})
+				
+				FadeTween:Play()
+				
+				FadeTween.Completed:Connect(function()
+					if self.CurrentZone ~= ZoneId and self.CurrentMusic then
+						self.CurrentMusic:Destroy()
+						self.CurrentMusic = nil
+					end
+				end)
+			else
+				self:StopMusic()
+			end
+		end
+		
+		if Zone.AmbientSounds and #Zone.AmbientSounds > 0 then
+			for _, AmbientSound in ipairs(Zone.AmbientSounds) do
+				self:StopAmbientSound(AmbientSound.SoundId, true)
+			end
+		end
+		self.CurrentZone = nil
+	end
 end
 
 function SoundtrackController:PlayMusic(SoundId, Options)
@@ -277,6 +474,113 @@ function SoundtrackController:PlayPlaylistTrack()
 	end
 end
 
+function SoundtrackController:PlayAmbientSound(SoundId, Options)
+	Options = Options or {}
+	if not self.IsEnabled then return end
+	
+	local Sound = self.AmbientSoundCache[SoundId]
+	
+	if not Sound or Sound.Parent == nil then
+		local Sound = Instance.new("Sound")
+		Sound.SoundId = SoundId
+		Sound.SoundGroup = self.AmbientGroup
+		Sound.Looped = Options.Loop ~= false
+		Sound.Parent = SoundService
+		self.AmbientSoundCache[SoundId] = Sound
+	end
+	
+	Sound.Volume = (Options.Volume or self.AmbientVolume) * self.MasterVolume
+	Sound.PlaybackSpeed = Options.PlaybackSpeed or 1
+	
+	if Options.ReverbType then
+		local ReverbEffect = Sound:FindFirstChildOfClass("ReverbSoundEffect") or Instance.new("ReverbSoundEffect")
+		ReverbEffect.ReverbType = Options.ReverbType
+		ReverbEffect.Parent = Sound
+	end
+	
+	Sound:Play()
+	
+	local AmbientSoundObj = {
+		Sound = Sound,
+		Id = SoundId,
+		Options = Options,
+		FadeInProgress = false,
+		FadeOutProgress = false
+	}
+	
+	table.insert(self.ActiveAmbientSoudns, AmbientSoundObj)
+	
+	return AmbientSoundObj
+end
+
+function SoundtrackController:StopAmbientSound(SoundId)
+	for i, AmbientSound in ipairs(self.ActiveAmbientSounds) do
+		if AmbientSound.Id == SoundId then
+			if AmbientSound.Sound and AmbientSound.Sound.Parent then
+				AmbientSound.Sound:Stop()
+			end
+			table.remove(self.ActiveAmbientSounds, i)
+			break
+		end
+	end
+end
+
+function SoundtrackController:FadeOutAmbientSound(SoundId, Duration)
+	local FadeDuration = Duration or self.FadeOutDuration
+	
+	for i, AmbientSound in ipairs(self.ActiveAmbientSounds) do
+		if AmbientSound.Id == SoundId and not AmbientSound.FadeOutProgress then
+			AmbientSound.FadeOutProgress = true
+			
+			local FadeInfo = TweenInfo.new(FadeDuration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+			local FadeTween = TweenService:Create(AmbientSound.Sound, FadeInfo, {Volume = 0})
+			
+			FadeTween:Play()
+			
+			FadeTween.Completed:Connect(function()
+				if AmbientSound.Sound and AmbientSound.Sound.Parent then
+					AmbientSound.Sound:Stop()
+				end
+				
+				for j, ActiveSound in ipairs(self.ActiveAmbientSounds) do
+					if ActiveSound == AmbientSound then
+						table.remove(self.ActiveAmbientSounds, j)
+						break
+					end
+				end
+			end)
+			return FadeTween
+		end
+	end
+	
+	return nil
+end
+
+function SoundtrackController:StopAllAmbientSounds()
+	for _, AmbientSound in ipairs(self.ActiveAmbientSounds) do
+		if AmbientSound.Sound and AmbientSound.Sound.Parent then
+			AmbientSound.Sound:Stop()
+		end
+	end
+	
+	self.ActiveAmbientSounds = {}
+end
+
+function SoundtrackController:SetAmbientVolume(Volume, TweenDuration)
+	self.AmbientVolume = math.clamp(Volume, 0, 1)
+	
+	if TweenDuration and TweenDuration > 0 then
+		local TInfo = TweenInfo.new(TweenDuration, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+		local AmbientTween = TweenService:Create(self.AmbientGroup, TInfo, {Volume = self.AmbientVolume * self.MasterVolume})
+		
+		AmbientTween:Play()
+	else
+		self.AmbientGroup.Volume = self.AmbientVolume * self.MasterVolume
+	end
+	
+	self.OnVolumeChanged:Fire("Ambient", self.AmbientVolume)
+end
+
 function SoundtrackController:NextTrack()
 	if not self.CurrentPlaylist then return end
 	
@@ -455,6 +759,9 @@ function SoundtrackController:Cleanup()
 	self:StopMusic(false)
 	self:StopAllSFX()
 	
+	self:StopAllAmbientSounds()
+	self:StopZoneTracking()
+	
 	if self.MusicGroup then
 		self.MusicGroup:Destroy()
 	end
@@ -463,13 +770,26 @@ function SoundtrackController:Cleanup()
 		self.SFXGroup:Destroy()
 	end
 	
+	if self.AmbientGroup then
+		self.AmbientGroup:Destroy()
+	end
+	
 	for _, Sound in self.SoundCache do
 		if Sound and Sound.Parent then
 			Sound:Destroy()
 		end
 	end
 	
+	for _, Sound in self.AmbientSoundCache do
+		if Sound and Sound.Parent then
+			Sound:Destroy()
+		end
+	end
+	
 	self.SoundCache = {}
+	self.AmbientSoundCache = {}
+	self.AudioZones = {}
+	self.ActiveZones = {}
 end
 
 return SoundtrackController
